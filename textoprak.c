@@ -7,17 +7,22 @@
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 /* defines */
 
 #define KILO_VERSION "0.0.1"
+
 #define KILO_TAB_STOP 8
+#define DEFAULT_BUFFER_SIZE 80
+
 #define CTRL_KEY(k) ((k) & 0x1f) 
 
 enum editorKey {
@@ -54,6 +59,10 @@ struct editorConfig {
 	int screencols;
 	int numrows;
 	erow *row;  // array of rows
+	char *filename;
+	char *username;
+	char statusmsg[DEFAULT_BUFFER_SIZE];
+	time_t statusmsg_time;
 	struct termios orig_termios;
 };
 
@@ -229,7 +238,6 @@ void editorAppendRow(char *s, size_t len) {
 	E.row[at].chars = malloc(len + 1);
 	memcpy(E.row[at].chars, s, len);
 	E.row[at].chars[len] = '\0';  // null terminator
-	
 	E.row[at].rsize = 0;
 	E.row[at].render = NULL;
 	editorUpdateRow(&E.row[at]);
@@ -240,6 +248,9 @@ void editorAppendRow(char *s, size_t len) {
 /* file i/o */
 
 void editorOpen(char *filename) {
+	free(E.filename);
+	E.filename = strdup(filename);
+
 	FILE *fp = fopen(filename, "r");
 	if (!fp) die("fopen");
 
@@ -310,7 +321,7 @@ void editorDrawRows(struct abuf *ab) {
 		int filerow = y + E.rowoff;
 		if (filerow >= E.numrows) {
 			if (E.numrows == 0 && y == E.screenrows / 3) {
-				char welcome[80];
+				char welcome[DEFAULT_BUFFER_SIZE];
 				int welcomelen = snprintf(welcome, sizeof(welcome),
 					"Kilo editor -- version %s", KILO_VERSION);
 				if (welcomelen > E.screencols)
@@ -334,14 +345,66 @@ void editorDrawRows(struct abuf *ab) {
 			if (len < 0) len = 0;
 			if (len > E.screencols) len = E.screencols;
 			abAppend(ab, &E.row[filerow].render[E.coloff], len);
-
 		}
 
 		abAppend(ab, "\x1b[K", 3);
-		if (y < E.screenrows - 1) {
-			abAppend(ab, "\r\n", 2);
+		abAppend(ab, "\r\n", 2);
+	}
+}
+
+void editorDrawStatusBar(struct abuf *ab) {
+	// Switch to inverted color mode
+	abAppend(ab, "\x1b[7m", 4);
+	
+	char status[DEFAULT_BUFFER_SIZE];
+	char rstatus[DEFAULT_BUFFER_SIZE];
+	
+	int len = snprintf(status, sizeof(status), "%.20s - %d lines",
+		E.filename ? E.filename : "[No Name]", E.numrows);
+	
+	int rlen = snprintf(rstatus, sizeof(rstatus), "%d/%d",
+		E.cy + 1, E.numrows);
+
+	if (len > E.screencols) len = E.screencols;
+	abAppend(ab, status, len);
+	
+	while (len < E.screencols) {
+		if (E.screencols - len == rlen) {
+			abAppend(ab, rstatus, rlen);
+			break;
+		} else {
+			abAppend(ab, " ", 1);
+			len++;
 		}
 	}
+	// Switch back to normal mode
+	abAppend(ab, "\x1b[m", 3);
+	// Make room for the second line of status bar
+	abAppend(ab, "\r\n", 2);
+}
+
+void editorDrawMessageBar(struct abuf *ab) {
+	abAppend(ab, "\x1b[7m", 4);
+	
+	abAppend(ab, "\x1b[K", 3);
+
+	int msglen = strlen(E.statusmsg);
+	if (msglen > E.screencols) msglen = E.screencols;
+
+	if (msglen && time(NULL) - E.statusmsg_time < 5) {
+		abAppend(ab, E.statusmsg, msglen);	
+	} 
+	// Let's make a little fun
+	else {
+		msglen = strlen(E.username);
+		abAppend(ab, E.username, msglen);
+	}
+
+	for (int i = 0; i < E.screencols - msglen; i++) {
+		abAppend(ab, " ", 1);
+	}
+
+	abAppend(ab, "\x1b[m", 3);
 }
 
 void editorRefreshScreen(void) {
@@ -360,7 +423,9 @@ void editorRefreshScreen(void) {
 	abAppend(&ab, "\x1b[H", 3);
 
 	editorDrawRows(&ab);
-
+	editorDrawStatusBar(&ab);
+	editorDrawMessageBar(&ab);
+	
 	// Moving the cursor
 	char buf[32];
 	snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, 
@@ -371,6 +436,44 @@ void editorRefreshScreen(void) {
 
 	write(STDOUT_FILENO, ab.b, ab.len);  // print out to STDOUT
 	abFree(&ab);  // free resources
+}
+
+/* Footer */
+
+void editorSetStatusMessage(const char *format, ...) {
+	va_list ap;
+	va_start(ap, format);
+	vsnprintf(E.statusmsg, sizeof(E.statusmsg), format, ap);
+	va_end(ap);
+	E.statusmsg_time = time(NULL);
+}
+
+char* editorGetUsername(void) {
+	char *username = getlogin();
+	if (username == NULL) {
+		die("getlogin");
+	}
+
+	return username;
+}
+
+// Only Dune fans could use this editor
+void editorSetUsername(const char *username) {
+	if (username == NULL) {
+		char *tempUsername = "Unknown";
+		E.username = strdup(tempUsername);
+		return;
+	}
+
+	free(E.username);
+	E.username = strdup(username);
+
+	char *suffix_msg = " Atreides";
+	int len_suffix_msg = strlen(suffix_msg);
+	int len_username = strlen(username);
+
+	E.username = realloc(E.username, len_suffix_msg + len_username + 1);  // + 1 null character
+	strcat(E.username, suffix_msg);
 }
 
 /* input */
@@ -465,9 +568,15 @@ void initEditor(void) {
 	E.rowoff = 0;
 	E.numrows = 0;
 	E.row = NULL;
+	E.filename = NULL;
+	E.username = NULL;
+	E.statusmsg[0] = '\0';  // null terminator
+	E.statusmsg_time = 0;
 
 	if (getWindowSize(&E.screenrows, &E.screencols) == -1)
 		die("getWindowSize");
+
+	E.screenrows -= 2;  // Reserved for status bar
 }
 
 int main(int argc, char *argv[]) {
@@ -476,6 +585,11 @@ int main(int argc, char *argv[]) {
 	if (argc >= 2) {
 		editorOpen(argv[1]);
 	}
+
+	editorSetStatusMessage("HELP: Ctrl-Q = quit");
+	const char *username = editorGetUsername();
+	editorSetUsername(username);
+
 	while (1) {
 		editorRefreshScreen();
 		editorProcessKeypress();

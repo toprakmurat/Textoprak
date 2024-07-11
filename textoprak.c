@@ -55,6 +55,11 @@ enum editorHighlight {
 
 /* data */
 
+struct abuf {
+	char *b;
+	int len;
+};
+
 struct editorSyntax {
 	char *filetype;
 	char **filematch;
@@ -69,8 +74,8 @@ typedef struct erow {
 	int idx;
 	int size;
 	int rsize;
-	char *chars;
-	char *render;
+	char *chars;      // actual characters, '\t'
+	char *render;     // printed characters to console, \t ='    ' 
 	unsigned char *hl;
 	int hl_open_comment;
 } erow;
@@ -555,8 +560,17 @@ void editorInsertNewline(void) {
 		editorUpdateRow(row);
 	}
 	// Move the cursor one line below and to the beginning of that line
+	int temp = 0;
+	for (int i = 0; i < E.row[E.cy].size; i++) {
+		if (E.row[E.cy].chars[i] == '\t') {
+			temp++;
+		} else {
+			break;
+		}
+	}
+
 	E.cy++;
-	E.cx = 0;
+	E.cx = TEXTOPRAK_TAB_STOP * temp;
 }
 
 void editorDelChar(void) {
@@ -724,11 +738,6 @@ void editorFind(void) {
 
 
 /* append buffer */
-
-struct abuf {
-	char *b;
-	int len;
-};
 
 // Append buffer initialization
 #define ABUF_INIT {NULL, 0}  // define it with a init funtion later

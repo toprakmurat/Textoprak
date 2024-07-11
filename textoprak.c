@@ -20,11 +20,14 @@
 /* defines */
 
 #define TEXTOPRAK_VERSION "0.0.1"
-#define TEXTOPRAK_TAB_STOP 8
-#define TEXTOPRAK_QUIT_TIMES 3
+#define TEXTOPRAK_TAB_STOP_DEFAULT 8
+#define TEXTOPRAK_QUIT_TIMES_DEFAULT 3
+#define TEXTOPRAK_CONFIG_FILENAME ".textoprakrc"
 #define DEFAULT_BUFFER_SIZE 80
 
 #define CTRL_KEY(k) ((k) & 0x1f) 
+
+// Global variables, could be changed via config file
 
 enum editorKey {
 	BACKSPACE = 127,
@@ -55,9 +58,9 @@ enum editorHighlight {
 
 /* data */
 
-struct abuf {
-	char *b;
-	int len;
+struct config {
+	int tab_stop;
+	int quit_times;
 };
 
 struct editorSyntax {
@@ -100,7 +103,7 @@ struct editorConfig {
 };
 
 struct editorConfig E;
-
+struct config cfg;
 /* filetypes */
 
 char *C_HL_extensions[] = { ".c", ".h", ".cpp", NULL};
@@ -133,7 +136,7 @@ char *PY_HL_keywords[] = {
 // highlight database
 struct editorSyntax HLDB[] = {
 	{
-		"c|",
+		"c",
 		C_HL_extensions,
 		C_HL_keywords,
 		"//", "/*", "*/",
@@ -451,7 +454,7 @@ int editorRowCxToRx(erow *row, int cx) {
 	int j;
 	for (j = 0; j < cx; j++) {
 		if (row->chars[j] == '\t')
-			rx += (TEXTOPRAK_TAB_STOP - 1) - (rx % TEXTOPRAK_TAB_STOP);
+			rx += (cfg.tab_stop - 1) - (rx % cfg.tab_stop);
 		rx++;
 	}
 	return rx;
@@ -462,7 +465,7 @@ int editorRowRxToCx(erow *row, int rx) {
 	int cx;
 	for (cx = 0; cx < row->size; cx++) {
 		if (row->chars[cx] == '\t')
-			cur_rx += (TEXTOPRAK_TAB_STOP - 1) - (cur_rx % TEXTOPRAK_TAB_STOP);
+			cur_rx += (cfg.tab_stop - 1) - (cur_rx % cfg.tab_stop);
 		cur_rx++;
 
 		if (cur_rx > rx) return cx;
@@ -477,14 +480,14 @@ void editorUpdateRow(erow *row) {
 		if (row->chars[j] == '\t') tabs++;
 
 	free(row->render);
-	row->render = malloc(row->size + tabs*(TEXTOPRAK_TAB_STOP - 1) + 1);
+	row->render = malloc(row->size + tabs*(cfg.tab_stop - 1) + 1);
 
 	// Copy the content of row to render
 	int idx = 0;
 	for (j = 0; j < row->size; j++) {
 		if (row->chars[j] == '\t') {
 			row->render[idx++] = ' ';
-			while (idx % TEXTOPRAK_TAB_STOP != 0) row->render[idx++] = ' ';
+			while (idx % cfg.tab_stop != 0) row->render[idx++] = ' ';
 		} else {
 		row->render[idx++] = row->chars[j];
 		}
@@ -594,7 +597,7 @@ void editorInsertNewline(void) {
 	}
 
 	E.cy++;
-	E.cx = TEXTOPRAK_TAB_STOP * temp;
+	E.cx = cfg.tab_stop * temp;
 }
 
 void editorDelChar(void) {
@@ -764,6 +767,11 @@ void editorFind(void) {
 /* append buffer */
 
 // Append buffer initialization
+struct abuf {
+	char *b;
+	int len;
+};
+
 #define ABUF_INIT {NULL, 0}  // define it with a init funtion later
 
 void abAppend(struct abuf *ab, const char *s, int len) {
@@ -1102,7 +1110,7 @@ void editorMoveCursor(int key) {
 }
 
 void editorProcessKeypress(void) {
-	static int quit_times = TEXTOPRAK_QUIT_TIMES;
+	static int quit_times = TEXTOPRAK_QUIT_TIMES_DEFAULT;
 
 	int c = editorReadKey();
 
@@ -1178,7 +1186,53 @@ void editorProcessKeypress(void) {
 			break;
 	}
 
-	quit_times = TEXTOPRAK_QUIT_TIMES;
+	quit_times = cfg.quit_times;
+}
+
+/* Configuration */
+
+void checkConfigFile(const char *fname) {
+	FILE *fp = fopen(fname, "r");
+	if (fp != NULL) {
+		fclose(fp);
+		return;  // config file exists
+	} else {
+		FILE *fptr = fopen(fname, "w");
+		if (fptr == NULL) {
+			die("fopen");
+		}
+		
+		fprintf(fptr, "tab_stop = %d\n", TEXTOPRAK_TAB_STOP_DEFAULT);
+		fprintf(fptr, "quit_times = %d\n", TEXTOPRAK_QUIT_TIMES_DEFAULT);
+
+		fclose(fptr);
+	}
+}
+
+void readConfigFile(const char *fname, struct config *cfg) {
+	FILE *fp = fopen(fname, "r");
+	if (fp == NULL) {
+		die("fopen");
+	}
+
+	char line[256];
+	while (fgets(line, sizeof(line), fp)) {
+		// Remove newline character
+		line[strcspn(line, "\n")] = 0;
+
+		char *key   = strtok(line, "=");
+		char *value = strtok(NULL, "=");
+		if (key && value) {
+			if (strcmp(key, "tab_stop") == 0 ||
+				strcmp(key, "tab_stop ") == 0) {
+				cfg->tab_stop = atoi(value);
+			} else if (strcmp(key, "quit_times") == 0 || 
+				strcmp(key, "quit_times ") == 0) {
+				cfg->quit_times = atoi(value);
+			}
+		}
+	}
+	fclose(fp);
 }
 
 /* init */
@@ -1201,11 +1255,19 @@ void initEditor(void) {
 		die("getWindowSize");
 
 	E.screenrows -= 2;  // Reserved for status bar
+
+	// Default values for cfg, not needed necessarily
+	cfg.tab_stop = TEXTOPRAK_TAB_STOP_DEFAULT;
+	cfg.quit_times = TEXTOPRAK_QUIT_TIMES_DEFAULT;
 }
 
 int main(int argc, char *argv[]) {
 	enableRawMode();
 	initEditor();
+
+	// Read the config file if exists
+	checkConfigFile("textoprak.cfg");
+	readConfigFile("textoprak.cfg", &cfg);
 	if (argc >= 2) {
 		editorOpen(argv[1]);
 	}

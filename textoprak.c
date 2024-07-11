@@ -78,6 +78,7 @@ typedef struct erow {
 	char *render;     // printed characters to console, \t ='    ' 
 	unsigned char *hl;
 	int hl_open_comment;
+	int line_no;
 } erow;
 
 struct editorConfig {
@@ -103,6 +104,7 @@ struct editorConfig E;
 /* filetypes */
 
 char *C_HL_extensions[] = { ".c", ".h", ".cpp", NULL};
+char *PY_HL_extensions[] = { ".py", ".ipy", NULL};
 
 // keywords that end with the character '|' are secondary others are primary
 char *C_HL_keywords[] = {
@@ -113,13 +115,35 @@ char *C_HL_keywords[] = {
   "void|", NULL
 };
 
+char *PY_HL_keywords[] = {
+	"False", "None", "True", "and", "as", "assert", "async", "await", "break",
+	"class", "continue", "def", "del", "elif", "else", "except", "finally",
+	"for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+	"not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+
+	"__init__|", "__new__|","__del__|","__repr__|","__str__|","__getattr__|",
+	"__setattr__|", "__delattr__|","__getattribute__|","__len__|","__getitem__|",
+	"__setitem__|","__delitem__|", "__iter__|","__next__|","__add__|","__sub__|",
+	"__mul__|","__truediv__|","__floordiv__|", "__mod__|","__pow__|","__eq__|",
+	"__ne__|","__lt__|","__le__|","__gt__|","__ge__|","__int__|", "__float__|",
+	"__complex__|","__bool__|","__bytes__|","__enter__|","__exit__|","__call__|",
+	"__hash__|","__contains__|","__format__|","__sizeof__|", NULL
+};
+
 // highlight database
 struct editorSyntax HLDB[] = {
 	{
-		"c",
+		"c|",
 		C_HL_extensions,
 		C_HL_keywords,
 		"//", "/*", "*/",
+		HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
+	},
+	{
+		"python",
+		PY_HL_extensions,
+		PY_HL_keywords,
+		"#", "'''", "'''",
 		HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
 	},
 };
@@ -559,7 +583,7 @@ void editorInsertNewline(void) {
 		row->chars[row->size] = '\0';
 		editorUpdateRow(row);
 	}
-	// Move the cursor one line below and to the beginning of that line
+	// Move the cursor one line below and auto indent
 	int temp = 0;
 	for (int i = 0; i < E.row[E.cy].size; i++) {
 		if (E.row[E.cy].chars[i] == '\t') {
@@ -955,6 +979,7 @@ void editorRefreshScreen(void) {
 
 	abAppend(&ab, "\x1b[?25h", 6);
 
+	// write(STDOUT_FILENO, "Hello", 5);
 	write(STDOUT_FILENO, ab.b, ab.len);  // print out to STDOUT
 	abFree(&ab);  // free resources
 }
